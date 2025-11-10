@@ -2,6 +2,8 @@ from rest_framework import serializers
 from .models import Usuario, Empresa, Cliente, Producto, Factura, FacturaItem
 from decimal import Decimal, InvalidOperation
 from django.utils import timezone
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from django.contrib.auth import authenticate
 
 DEFAULT_VAT = Decimal('19.00')
 
@@ -93,29 +95,37 @@ class FacturaItemWriteSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         product = validated_data['product']
-        # rellenar unit_price/vat si no fueron enviados, y garantizar Decimal
         up = validated_data.get('unit_price')
         vp = validated_data.get('vat_percentage')
         validated_data['unit_price'] = self._to_decimal(up) if up is not None else product.unit_price
         validated_data['vat_percentage'] = self._to_decimal(vp) if vp is not None else (product.vat_percentage or DEFAULT_VAT)
-        # asegurarse quantity es entero
         validated_data['quantity'] = int(validated_data['quantity'])
         return FacturaItem.objects.create(**validated_data)
 
 
 class FacturaSerializer(serializers.ModelSerializer):
+    # Campo writeable para recibir el ID del cliente
+    customer = serializers.PrimaryKeyRelatedField(queryset=Cliente.objects.all(), write_only=True)
+
+    # Campo adicional para mostrar los datos completos del cliente en la respuesta
+    customer_detail = ClienteSerializer(source='customer', read_only=True)
+
+    # Campo de solo lectura para mostrar el número generado automáticamente
+    number = serializers.CharField(read_only=True)
+
     items = FacturaItemWriteSerializer(many=True, required=False, write_only=True)
     items_detail = FacturaItemReadSerializer(source='facturaitem_set', many=True, read_only=True)
-
-    customer = serializers.PrimaryKeyRelatedField(queryset=Cliente.objects.all())
 
     class Meta:
         model = Factura
         fields = [
-            'id', 'empresa', 'customer', 'invoice_date', 'notes', 'number',
+            'id', 'empresa', 'customer', 'customer_detail', 'invoice_date', 'notes', 'number',
             'subtotal', 'total_tax', 'total', 'items', 'items_detail', 'created_at'
         ]
-        read_only_fields = ['id', 'empresa', 'subtotal', 'total_tax', 'total', 'created_at', 'invoice_date']
+        read_only_fields = [
+            'id', 'empresa', 'subtotal', 'total_tax', 'total',
+            'created_at', 'invoice_date', 'number'  # 👈 aseguramos que number no se escriba desde el frontend
+        ]
 
     def validate(self, attrs):
         request = self.context.get('request')
@@ -133,13 +143,10 @@ class FacturaSerializer(serializers.ModelSerializer):
         if empresa is None:
             raise serializers.ValidationError("Usuario sin empresa asociada")
 
-        # evitar invoice_date enviado por cliente (previene datetime vs date assertions)
         validated_data.pop('invoice_date', None)
-        # usar los datos crudos para items para evitar que DRF haya resuelto instancias
         items_input = request.data.get('items', [])
         validated_data.pop('items', None)
 
-        # crear factura ligada a la empresa del usuario
         factura = Factura.objects.create(empresa=empresa, **validated_data)
 
         for item_raw in items_input:
@@ -161,7 +168,6 @@ class FacturaSerializer(serializers.ModelSerializer):
             description = vi.get('description', '')
             quantity = int(vi.get('quantity'))
 
-            # Ajusta 'invoice=' si tu FK tiene otro nombre (ej. 'factura')
             FacturaItem.objects.create(
                 invoice=factura,
                 product=product,
@@ -171,6 +177,22 @@ class FacturaSerializer(serializers.ModelSerializer):
                 quantity=quantity
             )
 
-        # asegúrate de que Factura.recalculate_totals exista y maneje Decimals
         factura.recalculate_totals()
         return factura
+
+
+# 🔑 Serializer para login con email
+class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+    def validate(self, attrs):
+        email = attrs.get("email")
+        password = attrs.get("password")
+
+        user = authenticate(email=email, password=password)
+        if not user:
+            raise serializers.ValidationError("Credenciales inválidas")
+
+        # SimpleJWT espera 'username', lo rellenamos con el email
+        attrs["username"] = user.email
+        data = super().validate(attrs)
+        data["email"] = user.email
+        return data

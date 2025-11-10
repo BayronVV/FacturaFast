@@ -1,8 +1,13 @@
 from django.shortcuts import render
-
+from rest_framework_simplejwt.views import TokenObtainPairView
+from .serializers import CustomTokenObtainPairSerializer
 from rest_framework import generics, viewsets, permissions
 from .serializers import UsuarioRegistroSerializer, ClienteSerializer, ProductoSerializer, FacturaSerializer
 from .models import Usuario, Cliente, Producto, Factura
+
+class CustomTokenObtainPairView(TokenObtainPairView):
+    serializer_class = CustomTokenObtainPairSerializer
+
 
 class RegistroUsuarioView(generics.CreateAPIView):
     queryset = Usuario.objects.all()

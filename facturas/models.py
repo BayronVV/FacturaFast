@@ -94,7 +94,7 @@ class Factura(models.Model):
     customer = models.ForeignKey(Cliente, on_delete=models.PROTECT, related_name='facturas')
     invoice_date = models.DateTimeField(default=timezone.now)
     notes = models.TextField(blank=True)
-    number = models.CharField(max_length=64, blank=True, null=True)
+    number = models.CharField(max_length=64, blank=True, null=True, unique=True)  # 👈 ahora es único
     subtotal = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
     total_tax = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
     total = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
@@ -105,6 +105,19 @@ class Factura(models.Model):
 
     def __str__(self):
         return f"Factura {self.number or self.id} — {self.empresa.company_name}"
+
+    def save(self, *args, **kwargs):
+        if not self.number:
+            last = Factura.objects.filter(empresa=self.empresa).order_by('-created_at').first()
+            if last and last.number and last.number.startswith("FAC-"):
+                try:
+                    last_num = int(last.number.split("-")[1])
+                except (IndexError, ValueError):
+                    last_num = 0
+            else:
+                last_num = 0
+            self.number = f"FAC-{str(last_num + 1).zfill(4)}"
+        super().save(*args, **kwargs)
 
     def recalculate_totals(self):
         items = self.items.all()
