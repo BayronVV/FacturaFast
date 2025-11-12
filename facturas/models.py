@@ -6,6 +6,10 @@ from django.utils import timezone
 
 DEFAULT_VAT = Decimal('19.00')
 
+# -------------------------------
+# Usuario personalizado
+# -------------------------------
+
 class UsuarioManager(BaseUserManager):
     def create_user(self, email, full_name, password=None):
         if not email:
@@ -37,14 +41,9 @@ class Usuario(AbstractBaseUser, PermissionsMixin):
     def __str__(self):
         return self.email
 
-class Empresa(models.Model):
-    user = models.OneToOneField(Usuario, on_delete=models.CASCADE)
-    company_name = models.CharField(max_length=255)
-    tax_identification_number = models.CharField(max_length=255)
-    address = models.CharField(max_length=255)
-    phone_number = models.CharField(max_length=255)
-    email = models.EmailField()
-    website_link = models.URLField(blank=True)
+# -------------------------------
+# Empresa asociada al usuario
+# -------------------------------
 
 class Empresa(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='empresa')
@@ -52,11 +51,15 @@ class Empresa(models.Model):
     tax_identification_number = models.CharField(max_length=255, blank=True)
     address = models.TextField(blank=True)
     phone_number = models.CharField(max_length=50, blank=True)
+    email = models.EmailField(blank=True)
     website_link = models.URLField(blank=True)
 
     def __str__(self):
         return self.company_name
 
+# -------------------------------
+# Cliente
+# -------------------------------
 
 class Cliente(models.Model):
     empresa = models.ForeignKey(Empresa, on_delete=models.CASCADE, related_name='clientes')
@@ -73,6 +76,9 @@ class Cliente(models.Model):
     def __str__(self):
         return f"{self.name} — {self.empresa.company_name}"
 
+# -------------------------------
+# Producto
+# -------------------------------
 
 class Producto(models.Model):
     empresa = models.ForeignKey(Empresa, on_delete=models.CASCADE, related_name='productos')
@@ -88,13 +94,16 @@ class Producto(models.Model):
     def __str__(self):
         return f"{self.name} — {self.empresa.company_name}"
 
+# -------------------------------
+# Factura
+# -------------------------------
 
 class Factura(models.Model):
     empresa = models.ForeignKey(Empresa, on_delete=models.CASCADE, related_name='facturas')
     customer = models.ForeignKey(Cliente, on_delete=models.PROTECT, related_name='facturas')
     invoice_date = models.DateTimeField(default=timezone.now)
     notes = models.TextField(blank=True)
-    number = models.CharField(max_length=64, blank=True, null=True, unique=True)  # 👈 ahora es único
+    number = models.CharField(max_length=64, blank=True, null=True)  # 🔧 sin unique
     subtotal = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
     total_tax = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
     total = models.DecimalField(max_digits=14, decimal_places=2, default=Decimal('0.00'))
@@ -102,14 +111,17 @@ class Factura(models.Model):
 
     class Meta:
         ordering = ['-invoice_date', '-id']
+        constraints = [
+            models.UniqueConstraint(fields=['empresa', 'number'], name='unique_invoice_number_per_empresa')
+        ]
 
     def __str__(self):
         return f"Factura {self.number or self.id} — {self.empresa.company_name}"
 
     def save(self, *args, **kwargs):
         if not self.number:
-            last = Factura.objects.filter(empresa=self.empresa).order_by('-created_at').first()
-            if last and last.number and last.number.startswith("FAC-"):
+            last = Factura.objects.filter(empresa=self.empresa).exclude(number__isnull=True).order_by('-created_at').first()
+            if last and last.number.startswith("FAC-"):
                 try:
                     last_num = int(last.number.split("-")[1])
                 except (IndexError, ValueError):
@@ -133,6 +145,9 @@ class Factura(models.Model):
         self.total = subtotal + total_tax
         self.save(update_fields=['subtotal', 'total_tax', 'total'])
 
+# -------------------------------
+# Ítem de factura
+# -------------------------------
 
 class FacturaItem(models.Model):
     invoice = models.ForeignKey(Factura, on_delete=models.CASCADE, related_name='items')
@@ -162,13 +177,11 @@ class FacturaItem(models.Model):
         return self.line_total_exclusive + self.line_tax
 
     def save(self, *args, **kwargs):
-        # Completa unit_price y vat desde el producto si no vienen
         if self.unit_price is None:
             self.unit_price = self.product.unit_price
         if self.vat_percentage is None:
             self.vat_percentage = self.product.vat_percentage or DEFAULT_VAT
         super().save(*args, **kwargs)
-        # Recalcula totales de la factura padre
         try:
             self.invoice.recalculate_totals()
         except Exception:

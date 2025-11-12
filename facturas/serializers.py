@@ -7,12 +7,18 @@ from django.contrib.auth import authenticate
 
 DEFAULT_VAT = Decimal('19.00')
 
+# -------------------------------
+# Empresa
+# -------------------------------
 
 class EmpresaSerializer(serializers.ModelSerializer):
     class Meta:
         model = Empresa
         exclude = ['user']
 
+# -------------------------------
+# Usuario con empresa
+# -------------------------------
 
 class UsuarioRegistroSerializer(serializers.ModelSerializer):
     empresa = EmpresaSerializer()
@@ -28,6 +34,9 @@ class UsuarioRegistroSerializer(serializers.ModelSerializer):
         Empresa.objects.create(user=user, **empresa_data)
         return user
 
+# -------------------------------
+# Cliente
+# -------------------------------
 
 class ClienteSerializer(serializers.ModelSerializer):
     class Meta:
@@ -38,6 +47,9 @@ class ClienteSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'empresa', 'created_at']
 
+# -------------------------------
+# Producto
+# -------------------------------
 
 class ProductoSerializer(serializers.ModelSerializer):
     class Meta:
@@ -48,6 +60,9 @@ class ProductoSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'empresa', 'created_at']
 
+# -------------------------------
+# FacturaItem (lectura)
+# -------------------------------
 
 class FacturaItemReadSerializer(serializers.ModelSerializer):
     product = ProductoSerializer(read_only=True)
@@ -56,6 +71,9 @@ class FacturaItemReadSerializer(serializers.ModelSerializer):
         model = FacturaItem
         fields = ['id', 'product', 'description', 'unit_price', 'vat_percentage', 'quantity']
 
+# -------------------------------
+# FacturaItem (escritura)
+# -------------------------------
 
 class FacturaItemWriteSerializer(serializers.ModelSerializer):
     product = serializers.PrimaryKeyRelatedField(queryset=Producto.objects.all())
@@ -69,10 +87,12 @@ class FacturaItemWriteSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
         empresa = getattr(request.user, 'empresa', None)
         product = attrs.get('product')
+
         if not product:
             raise serializers.ValidationError("product is required")
         if empresa is None or product.empresa_id != empresa.id:
             raise serializers.ValidationError("Producto no pertenece a la empresa del usuario")
+
         qty = attrs.get('quantity')
         if qty is None:
             raise serializers.ValidationError("quantity is required")
@@ -81,6 +101,7 @@ class FacturaItemWriteSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError("quantity must be greater than 0")
         except (TypeError, ValueError):
             raise serializers.ValidationError("quantity must be an integer")
+
         return attrs
 
     def _to_decimal(self, value):
@@ -97,20 +118,20 @@ class FacturaItemWriteSerializer(serializers.ModelSerializer):
         product = validated_data['product']
         up = validated_data.get('unit_price')
         vp = validated_data.get('vat_percentage')
+
         validated_data['unit_price'] = self._to_decimal(up) if up is not None else product.unit_price
         validated_data['vat_percentage'] = self._to_decimal(vp) if vp is not None else (product.vat_percentage or DEFAULT_VAT)
         validated_data['quantity'] = int(validated_data['quantity'])
+
         return FacturaItem.objects.create(**validated_data)
 
+# -------------------------------
+# Factura
+# -------------------------------
 
 class FacturaSerializer(serializers.ModelSerializer):
-    # Campo writeable para recibir el ID del cliente
     customer = serializers.PrimaryKeyRelatedField(queryset=Cliente.objects.all(), write_only=True)
-
-    # Campo adicional para mostrar los datos completos del cliente en la respuesta
     customer_detail = ClienteSerializer(source='customer', read_only=True)
-
-    # Campo de solo lectura para mostrar el número generado automáticamente
     number = serializers.CharField(read_only=True)
 
     items = FacturaItemWriteSerializer(many=True, required=False, write_only=True)
@@ -124,64 +145,65 @@ class FacturaSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             'id', 'empresa', 'subtotal', 'total_tax', 'total',
-            'created_at', 'invoice_date', 'number'  # 👈 aseguramos que number no se escriba desde el frontend
+            'created_at', 'invoice_date', 'number'
         ]
 
     def validate(self, attrs):
         request = self.context.get('request')
         empresa = getattr(request.user, 'empresa', None)
         customer = attrs.get('customer')
+
         if empresa is None:
             raise serializers.ValidationError("Usuario sin empresa asociada")
         if customer.empresa_id != empresa.id:
             raise serializers.ValidationError("Cliente no pertenece a la empresa del usuario")
+
         return attrs
 
     def create(self, validated_data):
         request = self.context.get('request')
-        empresa = getattr(request.user, 'empresa', None)
-        if empresa is None:
-            raise serializers.ValidationError("Usuario sin empresa asociada")
-
         validated_data.pop('invoice_date', None)
         items_input = request.data.get('items', [])
         validated_data.pop('items', None)
 
-        factura = Factura.objects.create(empresa=empresa, **validated_data)
+        if not items_input or not isinstance(items_input, list):
+            raise serializers.ValidationError("Debes incluir al menos un producto en la factura.")
 
-        for item_raw in items_input:
-            item_data = {
-                'product': item_raw.get('product'),
-                'description': item_raw.get('description', ''),
-                'unit_price': item_raw.get('unit_price'),
-                'vat_percentage': item_raw.get('vat_percentage'),
-                'quantity': item_raw.get('quantity'),
-            }
+        # ✅ Ya viene empresa desde la vista, no la pasamos de nuevo
+        factura = Factura.objects.create(**validated_data)
 
-            write_serializer = FacturaItemWriteSerializer(data=item_data, context={'request': request})
-            write_serializer.is_valid(raise_exception=True)
-            vi = write_serializer.validated_data
+        for idx, item_raw in enumerate(items_input):
+            try:
+                item_data = {
+                    'product': item_raw.get('product'),
+                    'description': item_raw.get('description', ''),
+                    'unit_price': item_raw.get('unit_price'),
+                    'vat_percentage': item_raw.get('vat_percentage'),
+                    'quantity': item_raw.get('quantity'),
+                }
 
-            product = vi['product']
-            unit_price = vi.get('unit_price', product.unit_price)
-            vat_percentage = vi.get('vat_percentage', product.vat_percentage or DEFAULT_VAT)
-            description = vi.get('description', '')
-            quantity = int(vi.get('quantity'))
+                write_serializer = FacturaItemWriteSerializer(data=item_data, context={'request': request})
+                write_serializer.is_valid(raise_exception=True)
+                vi = write_serializer.validated_data
 
-            FacturaItem.objects.create(
-                invoice=factura,
-                product=product,
-                description=description,
-                unit_price=unit_price,
-                vat_percentage=vat_percentage,
-                quantity=quantity
-            )
+                FacturaItem.objects.create(
+                    invoice=factura,
+                    product=vi['product'],
+                    description=vi.get('description', ''),
+                    unit_price=vi.get('unit_price', vi['product'].unit_price),
+                    vat_percentage=vi.get('vat_percentage', vi['product'].vat_percentage or DEFAULT_VAT),
+                    quantity=int(vi['quantity'])
+                )
+            except Exception as e:
+                raise serializers.ValidationError({f"item_{idx}": str(e)})
 
         factura.recalculate_totals()
         return factura
 
+# -------------------------------
+# Login con email
+# -------------------------------
 
-# 🔑 Serializer para login con email
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     def validate(self, attrs):
         email = attrs.get("email")
@@ -191,7 +213,6 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         if not user:
             raise serializers.ValidationError("Credenciales inválidas")
 
-        # SimpleJWT espera 'username', lo rellenamos con el email
         attrs["username"] = user.email
         data = super().validate(attrs)
         data["email"] = user.email
