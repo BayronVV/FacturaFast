@@ -1,1 +1,1 @@
-web: gunicorn facturafast.wsgi
+web: gunicorn facturacion_api.wsgi:application
