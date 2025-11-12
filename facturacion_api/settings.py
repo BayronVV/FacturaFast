@@ -35,7 +35,7 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
-ROOT_URLCONF = "facturafast.urls"
+ROOT_URLCONF = "facturacion_api.urls"
 
 TEMPLATES = [
     {
@@ -53,7 +53,7 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = "facturafast.wsgi.application"
+WSGI_APPLICATION = "facturacion_api.wsgi.application"
 
 # Base de datos con fallback
 DATABASES = {
